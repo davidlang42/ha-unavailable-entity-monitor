@@ -1,5 +1,4 @@
 {
   "name": "Unavailable Entity Monitor",
-  "zip_release": true,
   "homeassistant": "2024.1.0"
 }
