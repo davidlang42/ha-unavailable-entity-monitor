@@ -70,20 +70,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         current_state = hass.states.get(entity_id)
         if current_state and current_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             issue_id = f"unavailable_{entity_id.replace('.', '_')}"
-            ir.async_create_issue(
-                hass,
-                DOMAIN,
-                issue_id,
-                is_fixable=True,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key="entity_unavailable",
-                translation_placeholders={
-                    "entity_id": entity_id,
-                    "state": current_state.state,
-                    "timeout": str(timeout_mins),
-                },
-                data={"entity_id": entity_id},
-            )
+            
+            # Prevent duplicate issue spamming if it's already registered
+            current_issues = ir.async_get(hass).issues
+            if (DOMAIN, issue_id) not in current_issues:
+                ir.async_create_issue(
+                    hass,
+                    DOMAIN,
+                    issue_id,
+                    is_fixable=True,
+                    severity=ir.IssueSeverity.WARNING,
+                    translation_key="entity_unavailable",
+                    translation_placeholders={
+                        "entity_id": entity_id,
+                        "state": current_state.state,
+                        "timeout": str(timeout_mins),
+                    },
+                    data={"entity_id": entity_id},
+                )
         pending_tasks.pop(entity_id, None)
 
     async def async_state_listener(event: Event) -> None:

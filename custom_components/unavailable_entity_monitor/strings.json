@@ -24,8 +24,8 @@
   },
   "issues": {
     "entity_unavailable": {
-      "title": "Entity Offline",
-      "description": "The entity `{entity_id}` has been reported as `{state}` for more than {timeout} minutes."
+      "title": "Entity Offline: {entity_id}",
+      "description": "The entity **{entity_id}** has been reported as **{state}** for more than {timeout} minutes."
     }
   },
   "repair": {
