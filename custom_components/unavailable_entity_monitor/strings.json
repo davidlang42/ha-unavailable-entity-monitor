@@ -1,0 +1,60 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Unavailable Entity Monitor",
+        "description": "Configure the timeout duration and exclusion label.",
+        "data": {
+          "timeout_minutes": "Timeout (minutes)",
+          "exclude_label": "Exclude Label Name"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure Unavailable Entity Monitor",
+        "data": {
+          "timeout_minutes": "Timeout (minutes)",
+          "exclude_label": "Exclude Label Name"
+        }
+      }
+    }
+  },
+  "issues": {
+    "entity_unavailable": {
+      "title": "Entity Offline",
+      "description": "The entity `{entity_id}` has been reported as `{state}` for more than {timeout} minutes."
+    }
+  },
+  "repair": {
+    "menu": {
+      "title": "Fix Unavailable Entity",
+      "description": "Choose how you would like to handle {{ entity_id }}:",
+      "options": {
+        "exclude_entity": "Add to exclusion list (ignore future unavailability)",
+        "power_cycle": "Power cycle a corresponding switch"
+      }
+    },
+    "step": {
+      "exclude_entity": {
+        "title": "Confirm Exclusion",
+        "description": "This will add the **{label_name}** label to **{entity_id}**, which means you'll never be told if this entity is unavailable again.\n\nAre you sure you want to proceed?",
+        "data": {}
+      },
+      "power_cycle": {
+        "title": "Select Power Switch",
+        "description": "Please select the switch entity used to power cycle this device:",
+        "data": {
+          "switch_entity": "Switch Entity"
+        }
+      },
+      "confirm_power_cycle": {
+        "title": "Confirm Power Cycle",
+        "description": "The switch **{switch_id}** is currently **{state}** and was last changed **{time_ago}**. \n\nAre you sure you want to turn it off and back on again?",
+        "data": {}
+      }
+    }
+  }
+}
