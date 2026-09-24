@@ -9,7 +9,7 @@ from homeassistant.helpers import (
     entity_registry as er,
     label_registry as lr,
 )
-from homeassistant.helpers.storage import Store, STORAGE_VERSION
+from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN, CONF_TIMEOUT, CONF_EXCLUDE_LABEL, DEFAULT_TIMEOUT, DEFAULT_EXCLUDE_LABEL
 
@@ -22,8 +22,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pending_tasks = {}  # entity_id -> asyncio.TimerHandle
     excluded_entity_ids = set()
 
-    # Setup persistent store for power switch mappings
-    store = Store(hass, STORAGE_VERSION, f"{DOMAIN}_power_switches")
+    # Setup persistent store for power switch mappings (using version 1)
+    store = Store(hass, 1, f"{DOMAIN}_power_switches")
     stored_data = await store.async_load()
     power_switches = stored_data.get("power_switches", {}) if stored_data else {}
     
