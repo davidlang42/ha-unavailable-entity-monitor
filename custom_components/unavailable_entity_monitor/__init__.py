@@ -8,10 +8,8 @@ from homeassistant.helpers import (
     issue_registry as ir, 
     entity_registry as er,
     label_registry as lr,
-    STORAGE_KEY, 
-    STORAGE_VERSION
 )
-from homeassistant.helpers.storage import Store
+from homeassistant.helpers.storage import Store, STORAGE_VERSION
 
 from .const import DOMAIN, CONF_TIMEOUT, CONF_EXCLUDE_LABEL, DEFAULT_TIMEOUT, DEFAULT_EXCLUDE_LABEL
 
