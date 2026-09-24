@@ -11,27 +11,46 @@ from .const import DOMAIN, CONF_EXCLUDE_LABEL, DEFAULT_EXCLUDE_LABEL
 _LOGGER = logging.getLogger(__name__)
 
 async def async_create_fix_flow(hass: HomeAssistant, issue_id: str, data: dict | None) -> RepairsFlow:
+    """Create the fix flow for an unavailable entity issue."""
     return UnavailableEntityRepairFlow(data)
 
 class UnavailableEntityRepairFlow(RepairsFlow):
+    """Handler for the repair flow dialogs."""
+
     def __init__(self, data: dict | None) -> None:
         self.data = data or {}
         self.entity_id = self.data.get("entity_id")
         self._selected_switch = None
 
-    async def async_step_init(self, user_input=None) -> RepairsFlowResult:
-        return self.async_show_menu(
-            step_id="menu",
-            menu_options=["exclude_entity", "power_cycle"],
+    async def async_step_init(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
+        """Present options via a form choice instead of an unsupported menu."""
+        if user_input is not None:
+            action = user_input.get("action")
+            if action == "exclude_entity":
+                return await self.async_step_exclude_entity()
+            elif action == "power_cycle":
+                return await self.async_step_power_cycle()
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema({
+                vol.Required("action", default="power_cycle"): vol.In({
+                    "power_cycle": "Power cycle a corresponding switch",
+                    "exclude_entity": "Add to exclusion list (ignore future unavailability)",
+                })
+            }),
+            description_placeholders={"entity_id": self.entity_id},
         )
 
     def _get_configured_label_name(self) -> str:
+        """Helper to fetch the configured exclusion label name."""
         entry = self.hass.config_entries.async_entries(DOMAIN)
         if entry:
             return entry[0].options.get(CONF_EXCLUDE_LABEL, entry[0].data.get(CONF_EXCLUDE_LABEL, DEFAULT_EXCLUDE_LABEL))
         return DEFAULT_EXCLUDE_LABEL
 
-    async def async_step_exclude_entity(self, user_input=None) -> RepairsFlowResult:
+    async def async_step_exclude_entity(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
+        """Ask for confirmation before adding the exclusion label, then clear the repair."""
         if user_input is not None:
             if self.entity_id:
                 ent_reg = er.async_get(self.hass)
@@ -57,16 +76,18 @@ class UnavailableEntityRepairFlow(RepairsFlow):
             ir.async_delete_issue(self.hass, DOMAIN, self.issue_id)
             return self.async_create_entry(title="", data={})
 
+        label_name = self._get_configured_label_name()
         return self.async_show_form(
             step_id="exclude_entity",
             data_schema=vol.Schema({}),
             description_placeholders={
-                "label_name": self._get_configured_label_name(),
+                "label_name": label_name,
                 "entity_id": self.entity_id,
             },
         )
 
-    async def async_step_power_cycle(self, user_input=None) -> RepairsFlowResult:
+    async def async_step_power_cycle(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
+        """Step 1: Ask the user to select a switch entity, pre-filling the last known choice."""
         if user_input is not None:
             self._selected_switch = user_input.get("switch_entity")
             return await self.async_step_confirm_power_cycle()
@@ -84,7 +105,8 @@ class UnavailableEntityRepairFlow(RepairsFlow):
             }),
         )
 
-    async def async_step_confirm_power_cycle(self, user_input=None) -> RepairsFlowResult:
+    async def async_step_confirm_power_cycle(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
+        """Step 2: Show switch state and last changed time, then execute upon confirmation."""
         if user_input is not None:
             switch_entity_id = self._selected_switch
             if switch_entity_id and self.entity_id:
@@ -92,7 +114,6 @@ class UnavailableEntityRepairFlow(RepairsFlow):
                 power_switches = domain_data.setdefault("power_switches", {})
                 power_switches[self.entity_id] = switch_entity_id
 
-                # Persist to disk so mappings survive reboots
                 store = domain_data.get("store")
                 if store:
                     await store.async_save({"power_switches": power_switches})
