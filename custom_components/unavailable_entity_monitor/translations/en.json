@@ -24,20 +24,19 @@
   },
   "issues": {
     "entity_unavailable": {
-      "title": "Entity Offline",
+      "title": "{entity_id} is {state}",
       "description": "The entity **{entity_id}** has been **{state}** for more than {timeout} minutes."
     }
   },
   "repair": {
-    "menu": {
-      "title": "Fix Unavailable Entity",
-      "description": "Choose how you would like to handle {{ entity_id }}:",
-      "options": {
-        "exclude_entity": "Add to exclusion list (ignore future unavailability)",
-        "power_cycle": "Power cycle a corresponding switch"
-      }
-    },
     "step": {
+      "init": {
+        "title": "Fix Unavailable Entity",
+        "description": "Choose how you would like to handle **{entity_id}**:",
+        "data": {
+          "action": "Action"
+        }
+      },
       "exclude_entity": {
         "title": "Confirm Exclusion",
         "description": "This will add the **{label_name}** label to **{entity_id}**, which means you'll never be told if this entity is unavailable again.\n\nAre you sure you want to proceed?",
