@@ -12,24 +12,51 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_create_fix_flow(hass: HomeAssistant, issue_id: str, data: dict | None) -> RepairsFlow:
     """Create the fix flow for an unavailable entity issue."""
-    return UnavailableEntityRepairFlow(data)
+    return UnavailableEntityRepairFlow(issue_id, data)
 
 class UnavailableEntityRepairFlow(RepairsFlow):
     """Handler for the repair flow dialogs."""
 
-    def __init__(self, data: dict | None) -> None:
+    def __init__(self, issue_id: str, data: dict | None) -> None:
+        self.issue_id = issue_id
         self.data = data or {}
         self.entity_id = self.data.get("entity_id")
         self._selected_switch = None
 
+    def _format_time_ago(self, state_obj) -> str:
+        """Helper to format a state's last_changed time into a human-readable string."""
+        if not state_obj or not state_obj.last_changed:
+            return "an unknown time"
+
+        diff = datetime.now(timezone.utc) - state_obj.last_changed
+        seconds = int(diff.total_seconds())
+
+        if seconds < 60:
+            return f"{seconds} seconds"
+        elif seconds < 3600:
+            return f"{seconds // 60} minutes"
+        elif seconds < 86400:
+            return f"{seconds // 3600} hours"
+        else:
+            return f"{seconds // 86400} days"
+
+    def _get_entity_duration_info(self) -> tuple[str, str]:
+        """Helper to get state and human-readable downtime duration for the failed entity."""
+        state_obj = self.hass.states.get(self.entity_id)
+        state_str = state_obj.state if state_obj else "unavailable"
+        time_str = self._format_time_ago(state_obj)
+        return state_str, time_str
+
     async def async_step_init(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
-        """Present options via a form choice instead of an unsupported menu."""
+        """Present options via a form choice."""
         if user_input is not None:
             action = user_input.get("action")
             if action == "exclude_entity":
                 return await self.async_step_exclude_entity()
             elif action == "power_cycle":
                 return await self.async_step_power_cycle()
+
+        state_str, time_str = self._get_entity_duration_info()
 
         return self.async_show_form(
             step_id="init",
@@ -39,7 +66,11 @@ class UnavailableEntityRepairFlow(RepairsFlow):
                     "exclude_entity": "Add to exclusion list (ignore future unavailability)",
                 })
             }),
-            description_placeholders={"entity_id": self.entity_id},
+            description_placeholders={
+                "entity_id": self.entity_id,
+                "state": state_str,
+                "time_ago": time_str,
+            },
         )
 
     def _get_configured_label_name(self) -> str:
@@ -87,9 +118,15 @@ class UnavailableEntityRepairFlow(RepairsFlow):
         )
 
     async def async_step_power_cycle(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
-        """Step 1: Ask the user to select a switch entity, pre-filling the last known choice."""
+        """Step 1: Ask the user to select a switch entity, then branch based on its state."""
         if user_input is not None:
             self._selected_switch = user_input.get("switch_entity")
+            switch_state = self.hass.states.get(self._selected_switch)
+            
+            # If the switch is currently off, route to the simple "turn on" confirmation step
+            if switch_state and switch_state.state == "off":
+                return await self.async_step_confirm_turn_on()
+            
             return await self.async_step_confirm_power_cycle()
 
         domain_data = self.hass.data.get(DOMAIN, {})
@@ -103,10 +140,43 @@ class UnavailableEntityRepairFlow(RepairsFlow):
                     selector.EntitySelectorConfig(domain="switch")
                 )
             }),
+            description_placeholders={"entity_id": self.entity_id},
+        )
+
+    async def async_step_confirm_turn_on(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
+        """Step 2a: Confirm and simply turn on an already-off switch."""
+        if user_input is not None:
+            switch_entity_id = self._selected_switch
+            if switch_entity_id and self.entity_id:
+                domain_data = self.hass.data.get(DOMAIN, {})
+                power_switches = domain_data.setdefault("power_switches", {})
+                power_switches[self.entity_id] = switch_entity_id
+
+                store = domain_data.get("store")
+                if store:
+                    await store.async_save({"power_switches": power_switches})
+
+                _LOGGER.info("Turning on switch %s for unavailable entity %s", switch_entity_id, self.entity_id)
+                await self.hass.services.async_call("switch", "turn_on", {"entity_id": switch_entity_id}, blocking=False)
+
+            # NOTE: We close the modal flow, but DO NOT delete the issue here. 
+            # The issue stays until the entity recovers and the state listener clears it.
+            return self.async_create_entry(title="", data={})
+
+        switch_state = self.hass.states.get(self._selected_switch)
+        time_str = self._format_time_ago(switch_state)
+
+        return self.async_show_form(
+            step_id="confirm_turn_on",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "switch_id": self._selected_switch,
+                "time_ago": time_str,
+            },
         )
 
     async def async_step_confirm_power_cycle(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
-        """Step 2: Show switch state and last changed time, then execute upon confirmation."""
+        """Step 2b: Confirm and execute a full power cycle (off -> wait -> on)."""
         if user_input is not None:
             switch_entity_id = self._selected_switch
             if switch_entity_id and self.entity_id:
@@ -126,23 +196,13 @@ class UnavailableEntityRepairFlow(RepairsFlow):
 
                 self.hass.async_create_task(_run_power_cycle())
 
+            # NOTE: We close the modal flow, but DO NOT delete the issue here. 
+            # The issue stays until the entity recovers and the state listener clears it.
             return self.async_create_entry(title="", data={})
 
         switch_state = self.hass.states.get(self._selected_switch)
         state_str = switch_state.state if switch_state else "unknown"
-        
-        time_str = "an unknown time"
-        if switch_state and switch_state.last_changed:
-            diff = datetime.now(timezone.utc) - switch_state.last_changed
-            seconds = int(diff.total_seconds())
-            if seconds < 60:
-                time_str = f"{seconds} seconds ago"
-            elif seconds < 3600:
-                time_str = f"{seconds // 60} minutes ago"
-            elif seconds < 86400:
-                time_str = f"{seconds // 3600} hours ago"
-            else:
-                time_str = f"{seconds // 86400} days ago"
+        time_str = self._format_time_ago(switch_state)
 
         return self.async_show_form(
             step_id="confirm_power_cycle",

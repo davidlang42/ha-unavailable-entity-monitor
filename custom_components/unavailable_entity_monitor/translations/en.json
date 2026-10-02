@@ -32,7 +32,7 @@
     "step": {
       "init": {
         "title": "Fix Unavailable Entity",
-        "description": "Choose how you would like to handle **{entity_id}**:",
+        "description": "The entity **{entity_id}** has been **{state}** for {time_ago}.\n\nChoose how you would like to handle this:",
         "data": {
           "action": "Action"
         }
@@ -44,14 +44,19 @@
       },
       "power_cycle": {
         "title": "Select Power Switch",
-        "description": "Please select the switch entity used to power cycle this device:",
+        "description": "Select the switch used to power cycle **{entity_id}**:",
         "data": {
           "switch_entity": "Switch Entity"
         }
       },
       "confirm_power_cycle": {
         "title": "Confirm Power Cycle",
-        "description": "The switch **{switch_id}** is currently **{state}** and was last changed **{time_ago}**. \n\nAre you sure you want to turn it off and back on again?",
+        "description": "The switch **{switch_id}** has been **{state}** for {time_ago}. \n\nAre you sure you want to turn it off and back on again?",
+        "data": {}
+      },
+      "confirm_turn_on": {
+        "title": "Confirm Turn On",
+        "description": "The switch **{switch_id}** is currently **off** and was last changed {time_ago} ago. \n\nAre you sure you want to turn it on?",
         "data": {}
       }
     }
