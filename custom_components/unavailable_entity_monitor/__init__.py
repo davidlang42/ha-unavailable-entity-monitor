@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from homeassistant.const import EVENT_STATE_CHANGED, STATE_UNKNOWN, STATE_UNAVAILABLE
+from homeassistant.const import EVENT_STATE_CHANGED, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant, Event
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import (
@@ -68,7 +68,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _handle_unavailable_entity(entity_id: str, timeout_mins: int):
         current_state = hass.states.get(entity_id)
-        if current_state and current_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+        if current_state and current_state.state in (STATE_UNAVAILABLE):
             issue_id = f"unavailable_{entity_id.replace('.', '_')}"
             
             # Prevent duplicate issue spamming if it's already registered
@@ -104,7 +104,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         timeout_mins = get_config(CONF_TIMEOUT, DEFAULT_TIMEOUT)
         state_val = new_state.state
 
-        if state_val in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+        if state_val in (STATE_UNAVAILABLE):
             _cleanup_entity_tracking(entity_id)
 
             tracking_delay = timedelta(minutes=timeout_mins)
@@ -121,7 +121,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     for state_obj in hass.states.async_all():
         entity_id = state_obj.entity_id
-        if state_obj.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+        if state_obj.state in (STATE_UNAVAILABLE):
             if entity_id in excluded_entity_ids:
                 continue
 
