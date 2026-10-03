@@ -25,39 +25,36 @@
   "issues": {
     "entity_unavailable": {
       "title": "{entity_id} is {state}",
-      "description": "The entity **{entity_id}** has been **{state}** for more than {timeout} minutes."
-    }
-  },
-  "repair": {
-    "step": {
-      "init": {
-        "title": "Fix Unavailable Entity",
-        "description": "The entity **{entity_id}** has been **{state}** for {time_ago}.\n\nChoose how you would like to handle this:",
-        "data": {
-          "action": "Action"
+      "description": "The entity **{entity_id}** has been **{state}** for more than {timeout} minutes.",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Fix Unavailable Entity",
+            "description": "The entity **{entity_id}** has been **{state}** for {time_ago}.\n\nChoose how you would like to handle this:",
+            "data": {
+              "action": "Action"
+            }
+          },
+          "exclude_entity": {
+            "title": "Confirm Exclusion",
+            "description": "This will add the **{label_name}** label to **{entity_id}**, which means you'll never be told if this entity is unavailable again.\n\nAre you sure you want to proceed?"
+          },
+          "power_cycle": {
+            "title": "Select Power Switch",
+            "description": "Select the switch used to power cycle **{entity_id}**:",
+            "data": {
+              "switch_entity": "Switch Entity"
+            }
+          },
+          "confirm_power_cycle": {
+            "title": "Confirm Power Cycle",
+            "description": "The switch **{switch_id}** has been **{state}** for {time_ago}. \n\nAre you sure you want to turn it off and back on again?"
+          },
+          "confirm_turn_on": {
+            "title": "Confirm Turn On",
+            "description": "The switch **{switch_id}** is currently **off** and was last changed {time_ago} ago.\n\nAre you sure you want to turn it on?"
+          }
         }
-      },
-      "exclude_entity": {
-        "title": "Confirm Exclusion",
-        "description": "This will add the **{label_name}** label to **{entity_id}**, which means you'll never be told if this entity is unavailable again.\n\nAre you sure you want to proceed?",
-        "data": {}
-      },
-      "power_cycle": {
-        "title": "Select Power Switch",
-        "description": "Select the switch used to power cycle **{entity_id}**:",
-        "data": {
-          "switch_entity": "Switch Entity"
-        }
-      },
-      "confirm_power_cycle": {
-        "title": "Confirm Power Cycle",
-        "description": "The switch **{switch_id}** has been **{state}** for {time_ago}. \n\nAre you sure you want to turn it off and back on again?",
-        "data": {}
-      },
-      "confirm_turn_on": {
-        "title": "Confirm Turn On",
-        "description": "The switch **{switch_id}** is currently **off** and was last changed {time_ago} ago. \n\nAre you sure you want to turn it on?",
-        "data": {}
       }
     }
   }
