@@ -16,11 +16,10 @@ from .const import DOMAIN, CONF_TIMEOUT, CONF_EXCLUDE_LABEL, DEFAULT_TIMEOUT, DE
 _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Unavailable Entity Monitor from a config entry with high performance caching."""
+    """Set up Unavailable Entity Monitor from a config entry."""
     hass.data.setdefault(DOMAIN, {})
     
     pending_tasks = {}  # entity_id -> asyncio.TimerHandle
-    excluded_entity_ids = set()
 
     # Setup persistent store for power switch mappings (using version 1)
     store = Store(hass, 1, f"{DOMAIN}_power_switches")
@@ -33,26 +32,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     def get_config(key, default):
         return entry.options.get(key, entry.data.get(key, default))
 
-    def _refresh_exclusion_cache():
-        """Compute and cache excluded entities to ensure O(1) lookup performance."""
-        nonlocal excluded_entity_ids
-        excluded_entity_ids.clear()
-        
-        label_name = get_config(CONF_EXCLUDE_LABEL, DEFAULT_EXCLUDE_LABEL).lower()
-        ent_reg = er.async_get(hass)
-        label_reg = lr.async_get(hass)
-        
-        target_label_ids = {
-            label.label_id for label in label_reg.async_list_labels()
-            if label.name.lower() == label_name
-        }
-        
-        if target_label_ids:
-            for ent_entry in ent_reg.entities.values():
-                if ent_entry.labels.intersection(target_label_ids):
-                    excluded_entity_ids.add(ent_entry.entity_id)
+    label_name = get_config(CONF_EXCLUDE_LABEL, DEFAULT_EXCLUDE_LABEL).lower()
+    label_reg = lr.async_get(hass)
+    target_label_id = None
+    for label in label_reg.async_list_labels():
+        if label.name.lower() == label_name:
+            target_label_id = label.label_id
+            break
+    
+    if not target_label_id:
+        new_label = label_reg.async_create(get_config(CONF_EXCLUDE_LABEL, DEFAULT_EXCLUDE_LABEL))
+        target_label_id = new_label.label_id
 
-    _refresh_exclusion_cache()
+    hass.data[DOMAIN]["target_label_id"] = target_label_id
+
+    def _is_entity_excluded(entity_id: str) -> bool:
+        """Check if the entity possesses the pre-cached exclusion label."""
+        if not target_label_id:
+            return False
+            
+        ent_reg = er.async_get(hass)
+        entity_entry = ent_reg.async_get(entity_id)
+        if entity_entry and entity_entry.labels:
+            return target_label_id in entity_entry.labels
+        return False
 
     def _cleanup_entity_tracking(entity_id: str):
         """Cancel timer handle and clear repair issues."""
@@ -97,36 +100,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not new_state:
             return
 
-        # O(1) performance check against pre-calculated exclusion set
-        if entity_id in excluded_entity_ids:
-            return
+        _cleanup_entity_tracking(entity_id)
 
-        timeout_mins = get_config(CONF_TIMEOUT, DEFAULT_TIMEOUT)
-        state_val = new_state.state
+        if new_state.state in (STATE_UNAVAILABLE):
+            if _is_entity_excluded(entity_id):
+                return
 
-        if state_val in (STATE_UNAVAILABLE):
-            _cleanup_entity_tracking(entity_id)
-
+            timeout_mins = get_config(CONF_TIMEOUT, DEFAULT_TIMEOUT)
             tracking_delay = timedelta(minutes=timeout_mins)
             pending_tasks[entity_id] = hass.loop.call_later(
                 tracking_delay.total_seconds(),
                 lambda: hass.async_create_task(_handle_unavailable_entity(entity_id, timeout_mins))
             )
-        else:
-            _cleanup_entity_tracking(entity_id)
 
     # Startup inspection scan
     timeout_mins = get_config(CONF_TIMEOUT, DEFAULT_TIMEOUT)
     now = datetime.now(timezone.utc)
+    target_delay = timedelta(minutes=timeout_mins)
 
     for state_obj in hass.states.async_all():
         entity_id = state_obj.entity_id
         if state_obj.state in (STATE_UNAVAILABLE):
-            if entity_id in excluded_entity_ids:
+            if _is_entity_excluded(entity_id):
                 continue
 
             elapsed = now - state_obj.last_changed
-            target_delay = timedelta(minutes=timeout_mins)
 
             if elapsed >= target_delay:
                 await _handle_unavailable_entity(entity_id, timeout_mins)

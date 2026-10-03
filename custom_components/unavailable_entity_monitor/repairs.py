@@ -64,7 +64,16 @@ class UnavailableEntityRepairFlow(RepairsFlow):
             )
 
     async def async_step_init(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
-        """Present options via a form choice."""
+        """Present options via a form choice, with an inline check using the cached label ID."""
+        if self.entity_id:
+            target_label_id = self.hass.data.get(DOMAIN, {}).get("target_label_id")
+            ent_reg = er.async_get(self.hass)
+            entity_entry = ent_reg.async_get(self.entity_id)
+            
+            if target_label_id and entity_entry and entity_entry.labels and target_label_id in entity_entry.labels:
+                ir.async_delete_issue(self.hass, DOMAIN, self.issue_id)
+                return self.async_create_entry(title="", data={})
+
         if user_input is not None:
             action = user_input.get("action")
             if action == "exclude_entity":
@@ -97,29 +106,19 @@ class UnavailableEntityRepairFlow(RepairsFlow):
         return DEFAULT_EXCLUDE_LABEL
 
     async def async_step_exclude_entity(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
-        """Ask for confirmation before adding the exclusion label, then clear the repair."""
+        """Ask for confirmation before adding the exclusion label using the cached label ID."""
         if user_input is not None:
             if self.entity_id:
                 ent_reg = er.async_get(self.hass)
                 entity_entry = ent_reg.async_get(self.entity_id)
                 
                 if entity_entry:
-                    label_name = self._get_configured_label_name()
-                    label_reg = lr.async_get(self.hass)
-                    
-                    target_label_id = next(
-                        (label.label_id for label in label_reg.async_list_labels() if label.name.lower() == label_name.lower()),
-                        None
-                    )
-                    
-                    if not target_label_id:
-                        new_label = label_reg.async_create(label_name)
-                        target_label_id = new_label.label_id
-
-                    current_labels = set(entity_entry.labels)
-                    if target_label_id not in current_labels:
-                        current_labels.add(target_label_id)
-                        ent_reg.async_update_entity(self.entity_id, labels=current_labels)
+                    target_label_id = self.hass.data.get(DOMAIN, {}).get("target_label_id")
+                    if target_label_id:
+                        current_labels = set(entity_entry.labels)
+                        if target_label_id not in current_labels:
+                            current_labels.add(target_label_id)
+                            ent_reg.async_update_entity(self.entity_id, labels=current_labels)
 
             ir.async_delete_issue(self.hass, DOMAIN, self.issue_id)
             return self.async_create_entry(title="", data={})
