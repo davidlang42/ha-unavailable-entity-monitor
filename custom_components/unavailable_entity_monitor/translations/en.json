@@ -30,14 +30,14 @@
         "step": {
           "init": {
             "title": "Fix Unavailable Entity",
-            "description": "The entity **{entity_id}** has been **{state}** for {time_ago}.\n\nChoose how you would like to handle this:",
+            "description": "The entity **{entity_id}** has been **{state}** for {time_ago}.",
             "data": {
-              "action": "Action"
+              "action": "How you would like to fix this:"
             }
           },
           "exclude_entity": {
             "title": "Confirm Exclusion",
-            "description": "This will add the **{label_name}** label to **{entity_id}**, which means you'll never be told if this entity is unavailable again.\n\nAre you sure you want to proceed?"
+            "description": "Adding the **{label_name}** label to **{entity_id}** will mean you won't be told if this entity is unavailable again.\n\nAre you sure you want to label this entity?"
           },
           "power_cycle": {
             "title": "Select Power Switch",
@@ -52,7 +52,7 @@
           },
           "confirm_turn_on": {
             "title": "Confirm Turn On",
-            "description": "The switch **{switch_id}** is currently **off** and was last changed {time_ago} ago.\n\nAre you sure you want to turn it on?"
+            "description": "The switch **{switch_id}** is currently **off** and was last changed {time_ago} ago.\n\nWould you like to turn it on?"
           }
         }
       }
