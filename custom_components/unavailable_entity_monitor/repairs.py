@@ -91,7 +91,7 @@ class UnavailableEntityRepairFlow(RepairsFlow):
                     label_name = self._get_configured_label_name()
                     label_reg = lr.async_get(self.hass)
                     target_label_id = next(
-                        (l_id for l_id, l_obj in label_reg.async_list_labels() if l_obj.name.lower() == label_name.lower()),
+                        (label.label_id for label in label_reg.async_list_labels() if label.name.lower() == label_name.lower()),
                         None
                     )
                     
@@ -123,7 +123,6 @@ class UnavailableEntityRepairFlow(RepairsFlow):
             self._selected_switch = user_input.get("switch_entity")
             switch_state = self.hass.states.get(self._selected_switch)
             
-            # If the switch is currently off, route to the simple "turn on" confirmation step
             if switch_state and switch_state.state == "off":
                 return await self.async_step_confirm_turn_on()
             
@@ -159,8 +158,6 @@ class UnavailableEntityRepairFlow(RepairsFlow):
                 _LOGGER.info("Turning on switch %s for unavailable entity %s", switch_entity_id, self.entity_id)
                 await self.hass.services.async_call("switch", "turn_on", {"entity_id": switch_entity_id}, blocking=False)
 
-            # NOTE: We close the modal flow, but DO NOT delete the issue here. 
-            # The issue stays until the entity recovers and the state listener clears it.
             return self.async_create_entry(title="", data={})
 
         switch_state = self.hass.states.get(self._selected_switch)
@@ -196,8 +193,6 @@ class UnavailableEntityRepairFlow(RepairsFlow):
 
                 self.hass.async_create_task(_run_power_cycle())
 
-            # NOTE: We close the modal flow, but DO NOT delete the issue here. 
-            # The issue stays until the entity recovers and the state listener clears it.
             return self.async_create_entry(title="", data={})
 
         switch_state = self.hass.states.get(self._selected_switch)
