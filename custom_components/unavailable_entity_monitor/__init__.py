@@ -64,10 +64,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             pending_tasks.pop(entity_id, None)
 
         issue_id = f"unavailable_{entity_id.replace('.', '_')}"
-        try:
-            ir.async_delete_issue(hass, DOMAIN, issue_id)
-        except KeyError:
-            pass
+        if (DOMAIN, issue_id) in ir.async_get(hass).issues:
+            try:
+                ir.async_delete_issue(hass, DOMAIN, issue_id)
+            except KeyError:
+                pass
 
     async def _handle_unavailable_entity(entity_id: str, timeout_mins: int):
         current_state = hass.states.get(entity_id)
@@ -94,15 +95,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pending_tasks.pop(entity_id, None)
 
     async def async_state_listener(event: Event) -> None:
-        entity_id = event.data.get("entity_id")
         new_state = event.data.get("new_state")
         
         if not new_state:
             return
 
+        new_is_unavailable = new_state.state == STATE_UNAVAILABLE
+        old_state = event.data.get("old_state")
+
+        # If we don't know the old state, don't shortcut
+        if old_state:
+            old_is_unavailable = old_state.state == STATE_UNAVAILABLE
+
+            # If both are unavailable, entity remains down -> preserve existing task/issue
+            if old_is_unavailable and new_is_unavailable:
+                return
+
+            # If neither is unavailable, normal state change -> ignore completely
+            if not old_is_unavailable and not new_is_unavailable:
+                return
+
+        entity_id = event.data.get("entity_id")
         _cleanup_entity_tracking(entity_id)
 
-        if new_state.state in (STATE_UNAVAILABLE):
+        if new_is_unavailable:
             if _is_entity_excluded(entity_id):
                 return
 
