@@ -84,6 +84,8 @@ class UnavailableEntityRepairFlow(RepairsFlow):
                 return await self.async_step_exclude_entity()
             elif action == "power_cycle":
                 return await self.async_step_power_cycle()
+            elif action == "ignore_for_now":
+                return await self.async_step_ignore_for_now()
 
         state_str, time_str = self._get_entity_duration_info()
 
@@ -93,6 +95,7 @@ class UnavailableEntityRepairFlow(RepairsFlow):
                 vol.Required("action", default="power_cycle"): vol.In({
                     "power_cycle": "Power cycle a corresponding switch",
                     "exclude_entity": "Add to exclusion list (ignore future unavailability)",
+                    "ignore_for_now": "Ignore this entity for now",
                 })
             }),
             description_placeholders={
@@ -108,6 +111,20 @@ class UnavailableEntityRepairFlow(RepairsFlow):
         if entry:
             return entry[0].options.get(CONF_EXCLUDE_LABEL, entry[0].data.get(CONF_EXCLUDE_LABEL, DEFAULT_EXCLUDE_LABEL))
         return DEFAULT_EXCLUDE_LABEL
+
+    async def async_step_ignore_for_now(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
+        """Confirmation step for ignoring the issue temporarily."""
+        if user_input is not None:
+            ir.async_delete_issue(self.hass, DOMAIN, self.issue_id)
+            return self.async_create_entry(title="", data={})
+
+        return self.async_show_form(
+            step_id="ignore_for_now",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "entity_id": self.entity_id,
+            },
+        )
 
     async def async_step_exclude_entity(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
         """Ask for confirmation before adding the exclusion label using the cached label ID."""
