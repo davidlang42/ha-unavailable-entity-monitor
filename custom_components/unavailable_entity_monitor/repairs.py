@@ -47,6 +47,22 @@ class UnavailableEntityRepairFlow(RepairsFlow):
         time_str = self._format_time_ago(state_obj)
         return state_str, time_str
 
+    def _preserve_issue(self) -> None:
+        """Helper to re-create the issue so it stays active after the flow completes."""
+        issue_reg = ir.async_get(self.hass)
+        issue_entry = issue_reg.async_get(DOMAIN, self.issue_id)
+        if issue_entry:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                self.issue_id,
+                is_fixable=issue_entry.is_fixable,
+                severity=issue_entry.severity,
+                translation_key=issue_entry.translation_key,
+                translation_placeholders=issue_entry.translation_placeholders,
+                learn_more_url=issue_entry.learn_more_url,
+            )
+
     async def async_step_init(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
         """Present options via a form choice."""
         if user_input is not None:
@@ -90,6 +106,7 @@ class UnavailableEntityRepairFlow(RepairsFlow):
                 if entity_entry:
                     label_name = self._get_configured_label_name()
                     label_reg = lr.async_get(self.hass)
+                    
                     target_label_id = next(
                         (label.label_id for label in label_reg.async_list_labels() if label.name.lower() == label_name.lower()),
                         None
@@ -143,7 +160,7 @@ class UnavailableEntityRepairFlow(RepairsFlow):
         )
 
     async def async_step_confirm_turn_on(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
-        """Step 2a: Confirm and simply turn on an already-off switch."""
+        """Step 2a: Confirm and simply turn on an already-off switch (leaves issue open)."""
         if user_input is not None:
             switch_entity_id = self._selected_switch
             if switch_entity_id and self.entity_id:
@@ -158,6 +175,7 @@ class UnavailableEntityRepairFlow(RepairsFlow):
                 _LOGGER.info("Turning on switch %s for unavailable entity %s", switch_entity_id, self.entity_id)
                 await self.hass.services.async_call("switch", "turn_on", {"entity_id": switch_entity_id}, blocking=False)
 
+            self._preserve_issue()
             return self.async_create_entry(title="", data={})
 
         switch_state = self.hass.states.get(self._selected_switch)
@@ -173,7 +191,7 @@ class UnavailableEntityRepairFlow(RepairsFlow):
         )
 
     async def async_step_confirm_power_cycle(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
-        """Step 2b: Confirm and execute a full power cycle (off -> wait -> on)."""
+        """Step 2b: Confirm and execute a full power cycle (leaves issue open)."""
         if user_input is not None:
             switch_entity_id = self._selected_switch
             if switch_entity_id and self.entity_id:
@@ -193,6 +211,7 @@ class UnavailableEntityRepairFlow(RepairsFlow):
 
                 self.hass.async_create_task(_run_power_cycle())
 
+            self._preserve_issue()
             return self.async_create_entry(title="", data={})
 
         switch_state = self.hass.states.get(self._selected_switch)
