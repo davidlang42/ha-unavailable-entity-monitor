@@ -48,20 +48,24 @@ class UnavailableEntityRepairFlow(RepairsFlow):
         return state_str, time_str
 
     def _preserve_issue(self) -> None:
-        """Helper to re-create the issue so it stays active after the flow completes."""
+        """Helper to re-create the issue after a 1-second delay so it stays active after the flow completes."""
         issue_reg = ir.async_get(self.hass)
-        issue_entry = issue_reg.async_get(DOMAIN, self.issue_id)
+        issue_entry = issue_reg.issues.get((DOMAIN, self.issue_id))
         if issue_entry:
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                self.issue_id,
-                is_fixable=issue_entry.is_fixable,
-                severity=issue_entry.severity,
-                translation_key=issue_entry.translation_key,
-                translation_placeholders=issue_entry.translation_placeholders,
-                learn_more_url=issue_entry.learn_more_url,
-            )
+            def recreate():
+                ir.async_create_issue(
+                    self.hass,
+                    DOMAIN,
+                    self.issue_id,
+                    is_fixable=issue_entry.is_fixable,
+                    severity=issue_entry.severity,
+                    translation_key=issue_entry.translation_key,
+                    translation_placeholders=issue_entry.translation_placeholders,
+                    learn_more_url=issue_entry.learn_more_url,
+                    data=issue_entry.data,
+                )
+            
+            self.hass.loop.call_later(1.0, recreate)
 
     async def async_step_init(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
         """Present options via a form choice, with an inline check using the cached label ID."""
