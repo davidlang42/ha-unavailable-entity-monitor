@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 import voluptuous as vol
+from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er, label_registry as lr, issue_registry as ir

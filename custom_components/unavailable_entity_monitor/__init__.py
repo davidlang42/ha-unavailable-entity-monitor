@@ -7,6 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import (
     issue_registry as ir, 
     entity_registry as er,
+    device_registry as dr,
     label_registry as lr,
 )
 from homeassistant.helpers.event import async_call_later
@@ -121,8 +122,13 @@ class UnavailableEntityMonitorManager:
             
             if (DOMAIN, issue_id) not in ir.async_get(self.hass).issues:
                 issue_data = {"entity_id": entity_id}
+                display_name = entity_id
                 if device_id:
                     issue_data["device_id"] = device_id
+                    dev_reg = dr.async_get(self.hass)
+                    device_entry = dev_reg.async_get(device_id)
+                    if device_entry:
+                        display_name = device_entry.name_by_user or device_entry.name or entity_id
 
                 ir.async_create_issue(
                     self.hass,
@@ -132,7 +138,7 @@ class UnavailableEntityMonitorManager:
                     severity=ir.IssueSeverity.WARNING,
                     translation_key="entity_unavailable",
                     translation_placeholders={
-                        "entity_id": entity_id,
+                        "entity_id": display_name,
                         "state": current_state.state,
                         "timeout": str(timeout_mins),
                     },
