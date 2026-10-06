@@ -53,6 +53,7 @@ class UnavailableEntityMonitorManager:
         self.store = Store(hass, 1, f"{DOMAIN}_power_switches")
         self.power_switches: dict[str, str] = {}
         self.target_label_id: str | None = None
+        self._is_started = False
 
     def _get_config(self, key, default):
         return self.entry.options.get(key, self.entry.data.get(key, default))
@@ -82,12 +83,14 @@ class UnavailableEntityMonitorManager:
 
         timeout_mins = self._get_config(CONF_TIMEOUT, DEFAULT_TIMEOUT)
 
-        # Perform startup scan once HA is fully started (ensuring recorder states/last_changed are restored)
+        # Perform startup scan first, then enable live listening flag
         if self.hass.is_running:
             await self._perform_startup_scan(timeout_mins)
+            self._is_started = True
         else:
             async def _on_started(_):
                 await self._perform_startup_scan(timeout_mins)
+                self._is_started = True
             
             self.entry.async_on_unload(
                 self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
@@ -160,6 +163,10 @@ class UnavailableEntityMonitorManager:
         self.pending_tasks.pop(entity_id, None)
 
     async def async_state_listener(self, event: Event) -> None:
+        """Handle state changes once Home Assistant has fully started."""
+        if not self._is_started:
+            return
+
         new_state = event.data.get("new_state")
         if not new_state:
             return
