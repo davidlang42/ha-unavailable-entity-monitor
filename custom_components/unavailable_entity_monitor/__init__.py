@@ -1,7 +1,11 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from homeassistant.const import EVENT_STATE_CHANGED, STATE_UNAVAILABLE
+from homeassistant.const import (
+    EVENT_STATE_CHANGED, 
+    EVENT_HOMEASSISTANT_STARTED,
+    STATE_UNAVAILABLE,
+)
 from homeassistant.core import HomeAssistant, Event
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import (
@@ -76,9 +80,18 @@ class UnavailableEntityMonitorManager:
 
         self.hass.data[DOMAIN]["target_label_id"] = self.target_label_id
 
-        # Initial scan and listener setup
         timeout_mins = self._get_config(CONF_TIMEOUT, DEFAULT_TIMEOUT)
-        await self._perform_startup_scan(timeout_mins)
+
+        # Perform startup scan once HA is fully started (ensuring recorder states/last_changed are restored)
+        if self.hass.is_running:
+            await self._perform_startup_scan(timeout_mins)
+        else:
+            async def _on_started(_):
+                await self._perform_startup_scan(timeout_mins)
+            
+            self.entry.async_on_unload(
+                self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
+            )
 
         self.entry.async_on_unload(
             self.hass.bus.async_listen(EVENT_STATE_CHANGED, self.async_state_listener)
