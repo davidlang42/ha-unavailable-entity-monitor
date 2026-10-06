@@ -9,6 +9,7 @@ from homeassistant.helpers import (
     entity_registry as er,
     label_registry as lr,
 )
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN, CONF_TIMEOUT, CONF_EXCLUDE_LABEL, DEFAULT_TIMEOUT, DEFAULT_EXCLUDE_LABEL
@@ -19,67 +20,112 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Unavailable Entity Monitor from a config entry."""
     hass.data.setdefault(DOMAIN, {})
     
-    pending_tasks = {}  # entity_id -> asyncio.TimerHandle
-
-    # Setup persistent store for power switch mappings (using version 1)
-    store = Store(hass, 1, f"{DOMAIN}_power_switches")
-    stored_data = await store.async_load()
-    power_switches = stored_data.get("power_switches", {}) if stored_data else {}
+    manager = UnavailableEntityMonitorManager(hass, entry)
+    await manager.async_setup()
     
-    hass.data[DOMAIN]["power_switches"] = power_switches
-    hass.data[DOMAIN]["store"] = store
+    hass.data[DOMAIN]["manager"] = manager
+    return True
 
-    def get_config(key, default):
-        return entry.options.get(key, entry.data.get(key, default))
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload a config entry."""
+    manager = hass.data.get(DOMAIN, {}).get("manager")
+    if manager:
+        await manager.async_unload()
+    return True
 
-    label_name = get_config(CONF_EXCLUDE_LABEL, DEFAULT_EXCLUDE_LABEL).lower()
-    label_reg = lr.async_get(hass)
-    target_label_id = None
-    for label in label_reg.async_list_labels():
-        if label.name.lower() == label_name:
-            target_label_id = label.label_id
-            break
-    
-    if not target_label_id:
-        new_label = label_reg.async_create(get_config(CONF_EXCLUDE_LABEL, DEFAULT_EXCLUDE_LABEL))
-        target_label_id = new_label.label_id
+async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload config entry."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
-    hass.data[DOMAIN]["target_label_id"] = target_label_id
 
-    def _is_entity_excluded(entity_id: str) -> bool:
-        """Check if the entity possesses the pre-cached exclusion label."""
-        if not target_label_id:
+class UnavailableEntityMonitorManager:
+    """Manages tracking, timers, and issues for unavailable entities."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self.hass = hass
+        self.entry = entry
+        self.pending_tasks: dict[str, callable] = {}  # entity_id -> cancel callback
+        self.store = Store(hass, 1, f"{DOMAIN}_power_switches")
+        self.power_switches: dict[str, str] = {}
+        self.target_label_id: str | None = None
+
+    def _get_config(self, key, default):
+        return self.entry.options.get(key, self.entry.data.get(key, default))
+
+    async def async_setup(self) -> None:
+        """Initialize storage, labels, and listeners."""
+        stored_data = await self.store.async_load()
+        if stored_data:
+            self.power_switches = stored_data.get("power_switches", {})
+
+        self.hass.data[DOMAIN]["power_switches"] = self.power_switches
+        self.hass.data[DOMAIN]["store"] = self.store
+
+        label_name = self._get_config(CONF_EXCLUDE_LABEL, DEFAULT_EXCLUDE_LABEL).lower()
+        label_reg = lr.async_get(self.hass)
+        
+        for label in label_reg.async_list_labels():
+            if label.name.lower() == label_name:
+                self.target_label_id = label.label_id
+                break
+        
+        if not self.target_label_id:
+            new_label = label_reg.async_create(self._get_config(CONF_EXCLUDE_LABEL, DEFAULT_EXCLUDE_LABEL))
+            self.target_label_id = new_label.label_id
+
+        self.hass.data[DOMAIN]["target_label_id"] = self.target_label_id
+
+        # Initial scan and listener setup
+        timeout_mins = self._get_config(CONF_TIMEOUT, DEFAULT_TIMEOUT)
+        await self._perform_startup_scan(timeout_mins)
+
+        self.entry.async_on_unload(
+            self.hass.bus.async_listen(EVENT_STATE_CHANGED, self.async_state_listener)
+        )
+
+    def _is_entity_excluded(self, entity_id: str) -> bool:
+        if not self.target_label_id:
             return False
-            
-        ent_reg = er.async_get(hass)
+        ent_reg = er.async_get(self.hass)
         entity_entry = ent_reg.async_get(entity_id)
-        if entity_entry and entity_entry.labels:
-            return target_label_id in entity_entry.labels
-        return False
+        return bool(entity_entry and entity_entry.labels and self.target_label_id in entity_entry.labels)
 
-    def _cleanup_entity_tracking(entity_id: str):
-        """Cancel timer handle and clear repair issues."""
-        if entity_id in pending_tasks:
-            pending_tasks[entity_id].cancel()
-            pending_tasks.pop(entity_id, None)
+    def _get_group_key(self, entity_id: str) -> str:
+        ent_reg = er.async_get(self.hass)
+        entity_entry = ent_reg.async_get(entity_id)
+        if entity_entry and entity_entry.device_id:
+            return f"device_{entity_entry.device_id}"
+        return f"entity_{entity_id.replace('.', '_')}"
 
-        issue_id = f"unavailable_{entity_id.replace('.', '_')}"
-        if (DOMAIN, issue_id) in ir.async_get(hass).issues:
+    def _cleanup_entity_tracking(self, entity_id: str):
+        if entity_id in self.pending_tasks:
+            cancel_cb = self.pending_tasks.pop(entity_id)
+            cancel_cb()
+
+        group_key = self._get_group_key(entity_id)
+        issue_id = f"unavailable_{group_key}"
+        if (DOMAIN, issue_id) in ir.async_get(self.hass).issues:
             try:
-                ir.async_delete_issue(hass, DOMAIN, issue_id)
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
             except KeyError:
                 pass
 
-    async def _handle_unavailable_entity(entity_id: str, timeout_mins: int):
-        current_state = hass.states.get(entity_id)
-        if current_state and current_state.state in (STATE_UNAVAILABLE):
-            issue_id = f"unavailable_{entity_id.replace('.', '_')}"
+    async def _handle_unavailable_entity(self, entity_id: str, timeout_mins: int):
+        current_state = self.hass.states.get(entity_id)
+        if current_state and current_state.state == STATE_UNAVAILABLE:
+            ent_reg = er.async_get(self.hass)
+            entity_entry = ent_reg.async_get(entity_id)
+            device_id = entity_entry.device_id if entity_entry else None
+            group_key = f"device_{device_id}" if device_id else f"entity_{entity_id.replace('.', '_')}"
+            issue_id = f"unavailable_{group_key}"
             
-            # Prevent duplicate issue spamming if it's already registered
-            current_issues = ir.async_get(hass).issues
-            if (DOMAIN, issue_id) not in current_issues:
+            if (DOMAIN, issue_id) not in ir.async_get(self.hass).issues:
+                issue_data = {"entity_id": entity_id}
+                if device_id:
+                    issue_data["device_id"] = device_id
+
                 ir.async_create_issue(
-                    hass,
+                    self.hass,
                     DOMAIN,
                     issue_id,
                     is_fixable=True,
@@ -90,83 +136,64 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "state": current_state.state,
                         "timeout": str(timeout_mins),
                     },
-                    data={"entity_id": entity_id},
+                    data=issue_data,
                 )
-        pending_tasks.pop(entity_id, None)
+        self.pending_tasks.pop(entity_id, None)
 
-    async def async_state_listener(event: Event) -> None:
+    async def async_state_listener(self, event: Event) -> None:
         new_state = event.data.get("new_state")
-        
         if not new_state:
             return
 
         new_is_unavailable = new_state.state == STATE_UNAVAILABLE
         old_state = event.data.get("old_state")
 
-        # If we don't know the old state, don't shortcut
         if old_state:
             old_is_unavailable = old_state.state == STATE_UNAVAILABLE
-
-            # If both are unavailable, entity remains down -> preserve existing task/issue
             if old_is_unavailable and new_is_unavailable:
                 return
-
-            # If neither is unavailable, normal state change -> ignore completely
             if not old_is_unavailable and not new_is_unavailable:
                 return
 
         entity_id = event.data.get("entity_id")
-        _cleanup_entity_tracking(entity_id)
+        self._cleanup_entity_tracking(entity_id)
 
         if new_is_unavailable:
-            if _is_entity_excluded(entity_id):
+            if self._is_entity_excluded(entity_id):
                 return
 
-            timeout_mins = get_config(CONF_TIMEOUT, DEFAULT_TIMEOUT)
-            tracking_delay = timedelta(minutes=timeout_mins)
-            pending_tasks[entity_id] = hass.loop.call_later(
-                tracking_delay.total_seconds(),
-                lambda: hass.async_create_task(_handle_unavailable_entity(entity_id, timeout_mins))
-            )
+            timeout_mins = self._get_config(CONF_TIMEOUT, DEFAULT_TIMEOUT)
+            delay = timedelta(minutes=timeout_mins)
+            
+            async def _timer_callback(_):
+                await self._handle_unavailable_entity(entity_id, timeout_mins)
 
-    # Startup inspection scan
-    timeout_mins = get_config(CONF_TIMEOUT, DEFAULT_TIMEOUT)
-    now = datetime.now(timezone.utc)
-    target_delay = timedelta(minutes=timeout_mins)
+            self.pending_tasks[entity_id] = async_call_later(self.hass, delay.total_seconds(), _timer_callback)
 
-    for state_obj in hass.states.async_all():
-        entity_id = state_obj.entity_id
-        if state_obj.state in (STATE_UNAVAILABLE):
-            if _is_entity_excluded(entity_id):
-                continue
+    async def _perform_startup_scan(self, timeout_mins: int):
+        now = datetime.now(timezone.utc)
+        target_delay = timedelta(minutes=timeout_mins)
 
-            elapsed = now - state_obj.last_changed
+        for state_obj in self.hass.states.async_all():
+            entity_id = state_obj.entity_id
+            if state_obj.state == STATE_UNAVAILABLE:
+                if self._is_entity_excluded(entity_id):
+                    continue
 
-            if elapsed >= target_delay:
-                await _handle_unavailable_entity(entity_id, timeout_mins)
-            else:
-                remaining_delay = target_delay - elapsed
-                if entity_id not in pending_tasks:
-                    pending_tasks[entity_id] = hass.loop.call_later(
-                        remaining_delay.total_seconds(),
-                        lambda eid=entity_id, t=timeout_mins: hass.async_create_task(_handle_unavailable_entity(eid, t))
-                    )
+                elapsed = now - state_obj.last_changed
+                if elapsed >= target_delay:
+                    await self._handle_unavailable_entity(entity_id, timeout_mins)
+                else:
+                    remaining = target_delay - elapsed
+                    async def _timer_callback(_, eid=entity_id, t=timeout_mins):
+                        await self._handle_unavailable_entity(eid, t)
+                    
+                    if entity_id not in self.pending_tasks:
+                        self.pending_tasks[entity_id] = async_call_later(
+                            self.hass, remaining.total_seconds(), _timer_callback
+                        )
 
-    # Event listeners
-    entry.async_on_unload(hass.bus.async_listen(EVENT_STATE_CHANGED, async_state_listener))
-    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
-
-    # Cleanup function when unloading/reloading integration
-    async def async_unload_cleanup():
-        for task in pending_tasks.values():
-            task.cancel()
-        pending_tasks.clear()
-
-    entry.async_on_unload(async_unload_cleanup)
-    return True
-
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    return True
-
-async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    await hass.config_entries.async_reload(entry.entry_id)
+    async def async_unload(self):
+        for cancel_cb in self.pending_tasks.values():
+            cancel_cb()
+        self.pending_tasks.clear()

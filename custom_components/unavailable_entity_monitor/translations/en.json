@@ -30,22 +30,22 @@
         "step": {
           "init": {
             "title": "Fix Unavailable Entity",
-            "description": "The entity **{entity_id}** has been **{state}** for {time_ago}.",
+            "description": "The following affected entities were detected:\n\n{affected_entities}",
             "data": {
               "action": "How you would like to fix this:"
             }
           },
           "exclude_entity": {
             "title": "Confirm Exclusion",
-            "description": "Adding the **{label_name}** label to **{entity_id}** will mean you won't be told if this entity is unavailable again.\n\nAre you sure you want to label this entity?"
+            "description": "Adding the **{label_name}** label to these entities will mean you won't be told if they are unavailable again.\n\nAre you sure you want to label them?"
           },
           "ignore_for_now": {
             "title": "Ignore For Now",
-            "description": "This will remove the issue now, but it will reappear the next time **{entity_id}** becomes unavailable or HomeAssistant is restarted."
+            "description": "This will remove the issue now, but it will reappear the next time these entities become unavailable or HomeAssistant is restarted."
           },
           "power_cycle": {
             "title": "Select Power Switch",
-            "description": "Select the switch used to power cycle **{entity_id}**:",
+            "description": "Select the switch used to power cycle this device:",
             "data": {
               "switch_entity": "Switch Entity"
             }

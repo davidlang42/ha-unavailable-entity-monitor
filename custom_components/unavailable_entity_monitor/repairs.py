@@ -21,6 +21,7 @@ class UnavailableEntityRepairFlow(RepairsFlow):
         self.issue_id = issue_id
         self.data = data or {}
         self.entity_id = self.data.get("entity_id")
+        self.device_id = self.data.get("device_id")
         self._selected_switch = None
 
     def _format_time_ago(self, state_obj) -> str:
@@ -40,12 +41,41 @@ class UnavailableEntityRepairFlow(RepairsFlow):
         else:
             return f"{seconds // 86400} days"
 
-    def _get_entity_duration_info(self) -> tuple[str, str]:
-        """Helper to get state and human-readable downtime duration for the failed entity."""
-        state_obj = self.hass.states.get(self.entity_id)
-        state_str = state_obj.state if state_obj else "unavailable"
-        time_str = self._format_time_ago(state_obj)
-        return state_str, time_str
+    def _get_affected_entities(self) -> list[str]:
+        """Get all currently unavailable entities associated with this device or entity."""
+        if self.device_id:
+            ent_reg = er.async_get(self.hass)
+            device_entities = [
+                entry.entity_id
+                for entry in er.async_entries_for_device(ent_reg, self.device_id)
+            ]
+            unavailable = []
+            for eid in device_entities:
+                state_obj = self.hass.states.get(eid)
+                if state_obj and state_obj.state == STATE_UNAVAILABLE:
+                    unavailable.append(eid)
+            if unavailable:
+                return unavailable
+        if self.entity_id:
+            return [self.entity_id]
+        return []
+
+    def _get_affected_entities_description(self) -> str:
+        """Helper to format a bulleted list of affected entities and their downtime."""
+        affected = self._get_affected_entities()
+        lines = []
+        for eid in affected:
+            state_obj = self.hass.states.get(eid)
+            state_str = state_obj.state if state_obj else "unavailable"
+            time_str = self._format_time_ago(state_obj)
+            lines.append(f"- **{eid}** (is {state_str}, for {time_str})")
+        return "\n".join(lines) if lines else f"- **{self.entity_id}**"
+
+    def _get_power_switch_key(self) -> str:
+        """Get storage key for power switches based on device_id or entity_id."""
+        if self.device_id:
+            return f"device_{self.device_id}"
+        return self.entity_id
 
     def _preserve_issue(self) -> None:
         """Helper to re-create the issue after a 1-second delay so it stays active after the flow completes."""
@@ -69,12 +99,14 @@ class UnavailableEntityRepairFlow(RepairsFlow):
 
     async def async_step_init(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
         """Present options via a form choice, with an inline check using the cached label ID."""
-        if self.entity_id:
+        affected = self._get_affected_entities()
+        if affected:
             target_label_id = self.hass.data.get(DOMAIN, {}).get("target_label_id")
             ent_reg = er.async_get(self.hass)
-            entity_entry = ent_reg.async_get(self.entity_id)
-            
-            if target_label_id and entity_entry and entity_entry.labels and target_label_id in entity_entry.labels:
+            if target_label_id and all(
+                (entry := ent_reg.async_get(eid)) and entry.labels and target_label_id in entry.labels
+                for eid in affected
+            ):
                 ir.async_delete_issue(self.hass, DOMAIN, self.issue_id)
                 return self.async_create_entry(title="", data={})
 
@@ -87,21 +119,20 @@ class UnavailableEntityRepairFlow(RepairsFlow):
             elif action == "ignore_for_now":
                 return await self.async_step_ignore_for_now()
 
-        state_str, time_str = self._get_entity_duration_info()
+        affected_desc = self._get_affected_entities_description()
 
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
                 vol.Required("action", default="power_cycle"): vol.In({
                     "power_cycle": "Power cycle a corresponding switch",
-                    "exclude_entity": "Add to exclusion list (ignore future unavailability)",
-                    "ignore_for_now": "Ignore this entity for now",
+                    "exclude_entity": "Add all to exclusion list (ignore future unavailability)",
+                    "ignore_for_now": "Ignore this for now",
                 })
             }),
             description_placeholders={
                 "entity_id": self.entity_id,
-                "state": state_str,
-                "time_ago": time_str,
+                "affected_entities": affected_desc,
             },
         )
 
@@ -127,19 +158,19 @@ class UnavailableEntityRepairFlow(RepairsFlow):
         )
 
     async def async_step_exclude_entity(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
-        """Ask for confirmation before adding the exclusion label using the cached label ID."""
+        """Ask for confirmation before adding the exclusion label to all affected entities using the cached label ID."""
         if user_input is not None:
-            if self.entity_id:
-                ent_reg = er.async_get(self.hass)
-                entity_entry = ent_reg.async_get(self.entity_id)
-                
-                if entity_entry:
-                    target_label_id = self.hass.data.get(DOMAIN, {}).get("target_label_id")
-                    if target_label_id:
-                        current_labels = set(entity_entry.labels)
-                        if target_label_id not in current_labels:
-                            current_labels.add(target_label_id)
-                            ent_reg.async_update_entity(self.entity_id, labels=current_labels)
+            affected = self._get_affected_entities()
+            ent_reg = er.async_get(self.hass)
+            target_label_id = self.hass.data.get(DOMAIN, {}).get("target_label_id")
+            
+            for eid in affected:
+                entity_entry = ent_reg.async_get(eid)
+                if entity_entry and target_label_id:
+                    current_labels = set(entity_entry.labels)
+                    if target_label_id not in current_labels:
+                        current_labels.add(target_label_id)
+                        ent_reg.async_update_entity(eid, labels=current_labels)
 
             ir.async_delete_issue(self.hass, DOMAIN, self.issue_id)
             return self.async_create_entry(title="", data={})
@@ -167,7 +198,7 @@ class UnavailableEntityRepairFlow(RepairsFlow):
 
         domain_data = self.hass.data.get(DOMAIN, {})
         power_switches = domain_data.get("power_switches", {})
-        default_switch = power_switches.get(self.entity_id)
+        default_switch = power_switches.get(self._get_power_switch_key())
 
         return self.async_show_form(
             step_id="power_cycle",
@@ -183,16 +214,16 @@ class UnavailableEntityRepairFlow(RepairsFlow):
         """Step 2a: Confirm and simply turn on an already-off switch (leaves issue open)."""
         if user_input is not None:
             switch_entity_id = self._selected_switch
-            if switch_entity_id and self.entity_id:
+            if switch_entity_id:
                 domain_data = self.hass.data.get(DOMAIN, {})
                 power_switches = domain_data.setdefault("power_switches", {})
-                power_switches[self.entity_id] = switch_entity_id
+                power_switches[self._get_power_switch_key()] = switch_entity_id
 
                 store = domain_data.get("store")
                 if store:
                     await store.async_save({"power_switches": power_switches})
 
-                _LOGGER.info("Turning on switch %s for unavailable entity %s", switch_entity_id, self.entity_id)
+                _LOGGER.info("Turning on switch %s for unavailable target", switch_entity_id)
                 await self.hass.services.async_call("switch", "turn_on", {"entity_id": switch_entity_id}, blocking=False)
 
             self._preserve_issue()
@@ -214,17 +245,17 @@ class UnavailableEntityRepairFlow(RepairsFlow):
         """Step 2b: Confirm and execute a full power cycle (leaves issue open)."""
         if user_input is not None:
             switch_entity_id = self._selected_switch
-            if switch_entity_id and self.entity_id:
+            if switch_entity_id:
                 domain_data = self.hass.data.get(DOMAIN, {})
                 power_switches = domain_data.setdefault("power_switches", {})
-                power_switches[self.entity_id] = switch_entity_id
+                power_switches[self._get_power_switch_key()] = switch_entity_id
 
                 store = domain_data.get("store")
                 if store:
                     await store.async_save({"power_switches": power_switches})
 
                 async def _run_power_cycle():
-                    _LOGGER.info("Power cycling %s via user-selected switch %s", self.entity_id, switch_entity_id)
+                    _LOGGER.info("Power cycling via user-selected switch %s", switch_entity_id)
                     await self.hass.services.async_call("switch", "turn_off", {"entity_id": switch_entity_id}, blocking=True)
                     await asyncio.sleep(10)
                     await self.hass.services.async_call("switch", "turn_on", {"entity_id": switch_entity_id}, blocking=True)
