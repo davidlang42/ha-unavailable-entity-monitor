@@ -1,7 +1,11 @@
 import logging
 from datetime import timedelta
 
-from homeassistant.const import EVENT_STATE_CHANGED, STATE_UNAVAILABLE
+from homeassistant.const import (
+    EVENT_STATE_CHANGED, 
+    EVENT_HOMEASSISTANT_STARTED,
+    STATE_UNAVAILABLE,
+)
 from homeassistant.core import HomeAssistant, Event
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import (
@@ -48,14 +52,14 @@ class UnavailableEntityMonitorManager:
         self.pending_tasks: dict[str, callable] = {}  # entity_id -> cancel callback
         self.store = Store(hass, 1, f"{DOMAIN}_power_switches")
         self.power_switches: dict[str, str] = {}
-        self.active_issues: dict[str, dict] = {}
+        self.active_issues: dict[str, dict] = {}  # group_key -> issue metadata
         self.target_label_id: str | None = None
 
     def _get_config(self, key, default):
         return self.entry.options.get(key, self.entry.data.get(key, default))
 
     async def async_setup(self) -> None:
-        """Initialize storage, labels, and restore active issues."""
+        """Initialize storage, labels, and restore active issues upon startup."""
         stored_data = await self.store.async_load()
         if stored_data:
             self.power_switches = stored_data.get("power_switches", {})
@@ -78,9 +82,18 @@ class UnavailableEntityMonitorManager:
 
         self.hass.data[DOMAIN]["target_label_id"] = self.target_label_id
 
-        # Restore persisted active issues instantly on startup
         timeout_mins = self._get_config(CONF_TIMEOUT, DEFAULT_TIMEOUT)
-        await self._restore_persisted_issues(timeout_mins)
+
+        # Restore persisted active issues once HA is fully started and states are populated
+        if self.hass.is_running:
+            await self._restore_persisted_issues(timeout_mins)
+        else:
+            async def _on_started(_):
+                await self._restore_persisted_issues(timeout_mins)
+            
+            self.entry.async_on_unload(
+                self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
+            )
 
         self.entry.async_on_unload(
             self.hass.bus.async_listen(EVENT_STATE_CHANGED, self.async_state_listener)
@@ -172,7 +185,7 @@ class UnavailableEntityMonitorManager:
         self.pending_tasks.pop(entity_id, None)
 
     async def _restore_persisted_issues(self, timeout_mins: int):
-        """Restore active issues from storage instantly on startup."""
+        """Restore active issues from storage instantly once HA is running."""
         if not self.active_issues:
             return
 
