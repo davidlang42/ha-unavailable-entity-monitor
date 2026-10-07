@@ -6,6 +6,7 @@
   "issue_tracker": "https://github.com/davidlang42/ha-unavailable-entity-monitor/issues",
   "codeowners": ["davidlang42"],
   "requirements": [],
+  "after_dependencies": ["recorder"],
   "iot_class": "local_push",
-  "version": "2.0.5"
+  "version": "2.0.6"
 }

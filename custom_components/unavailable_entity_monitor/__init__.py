@@ -1,11 +1,7 @@
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
-from homeassistant.const import (
-    EVENT_STATE_CHANGED, 
-    EVENT_HOMEASSISTANT_STARTED,
-    STATE_UNAVAILABLE,
-)
+from homeassistant.const import EVENT_STATE_CHANGED, STATE_UNAVAILABLE, EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant, Event
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import (
@@ -44,7 +40,7 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 class UnavailableEntityMonitorManager:
-    """Manages tracking, timers, and issues for unavailable entities with storage persistence."""
+    """Manages tracking, timers, and issues for unavailable entities."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
@@ -52,18 +48,16 @@ class UnavailableEntityMonitorManager:
         self.pending_tasks: dict[str, callable] = {}  # entity_id -> cancel callback
         self.store = Store(hass, 1, f"{DOMAIN}_power_switches")
         self.power_switches: dict[str, str] = {}
-        self.active_issues: dict[str, dict] = {}  # group_key -> issue metadata
         self.target_label_id: str | None = None
 
     def _get_config(self, key, default):
         return self.entry.options.get(key, self.entry.data.get(key, default))
 
     async def async_setup(self) -> None:
-        """Initialize storage, labels, and restore active issues upon startup."""
+        """Initialize storage, labels, and listeners."""
         stored_data = await self.store.async_load()
         if stored_data:
             self.power_switches = stored_data.get("power_switches", {})
-            self.active_issues = stored_data.get("active_issues", {})
 
         self.hass.data[DOMAIN]["power_switches"] = self.power_switches
         self.hass.data[DOMAIN]["store"] = self.store
@@ -82,29 +76,13 @@ class UnavailableEntityMonitorManager:
 
         self.hass.data[DOMAIN]["target_label_id"] = self.target_label_id
 
+        # Initial scan and listener setup
         timeout_mins = self._get_config(CONF_TIMEOUT, DEFAULT_TIMEOUT)
-
-        # Restore persisted active issues once HA is fully started and states are populated
-        if self.hass.is_running:
-            await self._restore_persisted_issues(timeout_mins)
-        else:
-            async def _on_started(_):
-                await self._restore_persisted_issues(timeout_mins)
-            
-            self.entry.async_on_unload(
-                self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
-            )
+        await self._perform_startup_scan(timeout_mins)
 
         self.entry.async_on_unload(
             self.hass.bus.async_listen(EVENT_STATE_CHANGED, self.async_state_listener)
         )
-
-    async def _save_storage(self) -> None:
-        """Save power switches and active issues to persistent storage."""
-        await self.store.async_save({
-            "power_switches": self.power_switches,
-            "active_issues": self.active_issues,
-        })
 
     def _is_entity_excluded(self, entity_id: str) -> bool:
         if not self.target_label_id:
@@ -120,18 +98,13 @@ class UnavailableEntityMonitorManager:
             return f"device_{entity_entry.device_id}"
         return f"entity_{entity_id.replace('.', '_')}"
 
-    async def _cleanup_entity_tracking(self, entity_id: str):
+    def _cleanup_entity_tracking(self, entity_id: str):
         if entity_id in self.pending_tasks:
             cancel_cb = self.pending_tasks.pop(entity_id)
             cancel_cb()
 
         group_key = self._get_group_key(entity_id)
         issue_id = f"unavailable_{group_key}"
-        
-        if group_key in self.active_issues:
-            self.active_issues.pop(group_key)
-            await self._save_storage()
-
         if (DOMAIN, issue_id) in ir.async_get(self.hass).issues:
             try:
                 ir.async_delete_issue(self.hass, DOMAIN, issue_id)
@@ -141,33 +114,22 @@ class UnavailableEntityMonitorManager:
     async def _handle_unavailable_entity(self, entity_id: str, timeout_mins: int):
         current_state = self.hass.states.get(entity_id)
         if current_state and current_state.state == STATE_UNAVAILABLE:
-            if self._is_entity_excluded(entity_id):
-                return
-
             ent_reg = er.async_get(self.hass)
             entity_entry = ent_reg.async_get(entity_id)
             device_id = entity_entry.device_id if entity_entry else None
             group_key = f"device_{device_id}" if device_id else f"entity_{entity_id.replace('.', '_')}"
             issue_id = f"unavailable_{group_key}"
             
-            issue_data = {"entity_id": entity_id}
-            display_name = entity_id
-            if device_id:
-                issue_data["device_id"] = device_id
-                dev_reg = dr.async_get(self.hass)
-                device_entry = dev_reg.async_get(device_id)
-                if device_entry:
-                    display_name = device_entry.name_by_user or device_entry.name or entity_id
-
-            self.active_issues[group_key] = {
-                "entity_id": entity_id,
-                "device_id": device_id,
-                "display_name": display_name,
-                "timeout_mins": timeout_mins,
-            }
-            await self._save_storage()
-
             if (DOMAIN, issue_id) not in ir.async_get(self.hass).issues:
+                issue_data = {"entity_id": entity_id}
+                display_name = entity_id
+                if device_id:
+                    issue_data["device_id"] = device_id
+                    dev_reg = dr.async_get(self.hass)
+                    device_entry = dev_reg.async_get(device_id)
+                    if device_entry:
+                        display_name = device_entry.name_by_user or device_entry.name or entity_id
+
                 ir.async_create_issue(
                     self.hass,
                     DOMAIN,
@@ -183,56 +145,6 @@ class UnavailableEntityMonitorManager:
                     data=issue_data,
                 )
         self.pending_tasks.pop(entity_id, None)
-
-    async def _restore_persisted_issues(self, timeout_mins: int):
-        """Restore active issues from storage instantly once HA is running."""
-        if not self.active_issues:
-            return
-
-        to_remove = []
-        for group_key, info in list(self.active_issues.items()):
-            entity_id = info.get("entity_id")
-            device_id = info.get("device_id")
-            display_name = info.get("display_name", entity_id)
-            issue_id = f"unavailable_{group_key}"
-
-            current_state = self.hass.states.get(entity_id)
-            if current_state and current_state.state == STATE_UNAVAILABLE:
-                if self._is_entity_excluded(entity_id):
-                    to_remove.append(group_key)
-                    continue
-
-                issue_data = {"entity_id": entity_id}
-                if device_id:
-                    issue_data["device_id"] = device_id
-
-                if (DOMAIN, issue_id) not in ir.async_get(self.hass).issues:
-                    ir.async_create_issue(
-                        self.hass,
-                        DOMAIN,
-                        issue_id,
-                        is_fixable=True,
-                        severity=ir.IssueSeverity.WARNING,
-                        translation_key="entity_unavailable",
-                        translation_placeholders={
-                            "entity_id": display_name,
-                            "state": current_state.state,
-                            "timeout": str(timeout_mins),
-                        },
-                        data=issue_data,
-                    )
-            else:
-                to_remove.append(group_key)
-                if (DOMAIN, issue_id) in ir.async_get(self.hass).issues:
-                    try:
-                        ir.async_delete_issue(self.hass, DOMAIN, issue_id)
-                    except KeyError:
-                        pass
-
-        if to_remove:
-            for gk in to_remove:
-                self.active_issues.pop(gk, None)
-            await self._save_storage()
 
     async def async_state_listener(self, event: Event) -> None:
         new_state = event.data.get("new_state")
@@ -250,7 +162,7 @@ class UnavailableEntityMonitorManager:
                 return
 
         entity_id = event.data.get("entity_id")
-        await self._cleanup_entity_tracking(entity_id)
+        self._cleanup_entity_tracking(entity_id)
 
         if new_is_unavailable:
             if self._is_entity_excluded(entity_id):
@@ -263,6 +175,84 @@ class UnavailableEntityMonitorManager:
                 await self._handle_unavailable_entity(entity_id, timeout_mins)
 
             self.pending_tasks[entity_id] = async_call_later(self.hass, delay.total_seconds(), _timer_callback)
+
+    async def _perform_startup_scan(self, timeout_mins: int):
+        async def _scan_after_started(event=None):
+            now = datetime.now(timezone.utc)
+            target_delay = timedelta(minutes=timeout_mins)
+
+            # 1. Gather all entities that are currently unavailable and not excluded
+            unavailable_entities = [
+                state_obj.entity_id
+                for state_obj in self.hass.states.async_all()
+                if state_obj.state == STATE_UNAVAILABLE and not self._is_entity_excluded(state_obj.entity_id)
+            ]
+
+            if not unavailable_entities:
+                return
+
+            # 2. Query recorder database in a background thread
+            def _fetch_history():
+                from homeassistant.components.recorder import history
+                # A 1-day lookback is highly efficient and more than enough for a 10-minute timeout
+                start_time = now - timedelta(days=1)
+                return history.get_significant_states(
+                    self.hass,
+                    start_time=start_time,
+                    end_time=now,
+                    entity_ids=unavailable_entities,
+                    include_start_time_state=True,
+                    no_attributes=True, # Vastly reduces memory usage for the query
+                )
+
+            try:
+                history_data = await self.hass.async_add_executor_job(_fetch_history)
+            except Exception as e:
+                _LOGGER.error("Failed to fetch history for Unavailable Entity Monitor: %s", e)
+                history_data = {}
+
+            # 3. Process history to find true downtime
+            for entity_id in unavailable_entities:
+                current_state_obj = self.hass.states.get(entity_id)
+                # Verify it didn't come back online while we were querying the DB
+                if not current_state_obj or current_state_obj.state != STATE_UNAVAILABLE:
+                    continue
+
+                actual_last_changed = current_state_obj.last_changed
+                states = history_data.get(entity_id, [])
+
+                # Traverse backwards to find the oldest contiguous unavailable state
+                found_time = None
+                for state in reversed(states):
+                    if state.state == STATE_UNAVAILABLE:
+                        found_time = state.last_changed
+                    else:
+                        break # We hit a state where it was available
+
+                if found_time:
+                    actual_last_changed = found_time
+
+                elapsed = now - actual_last_changed
+                
+                # 4. Fire issue immediately or set remaining timer
+                if elapsed >= target_delay:
+                    await self._handle_unavailable_entity(entity_id, timeout_mins)
+                else:
+                    remaining = target_delay - elapsed
+                    async def _timer_callback(_, eid=entity_id, t=timeout_mins):
+                        await self._handle_unavailable_entity(eid, t)
+                    
+                    if entity_id not in self.pending_tasks:
+                        self.pending_tasks[entity_id] = async_call_later(
+                            self.hass, remaining.total_seconds(), _timer_callback
+                        )
+
+        # Trigger immediately if HA is already running (e.g., config reload),
+        # otherwise queue it for when the boot sequence finishes.
+        if self.hass.is_running:
+            self.hass.async_create_task(_scan_after_started())
+        else:
+            self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _scan_after_started)
 
     async def async_unload(self):
         for cancel_cb in self.pending_tasks.values():
