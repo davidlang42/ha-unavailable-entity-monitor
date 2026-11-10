@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from homeassistant.const import EVENT_STATE_CHANGED, STATE_UNAVAILABLE, EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant, Event
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.recorder import get_instance
 from homeassistant.helpers import (
     issue_registry as ir, 
     entity_registry as er,
@@ -206,7 +207,7 @@ class UnavailableEntityMonitorManager:
                 )
 
             try:
-                history_data = await self.hass.async_add_executor_job(_fetch_history)
+                history_data = await get_instance(self.hass).async_add_executor_job(_fetch_history)
             except Exception as e:
                 _LOGGER.error("Failed to fetch history for Unavailable Entity Monitor: %s", e)
                 history_data = {}

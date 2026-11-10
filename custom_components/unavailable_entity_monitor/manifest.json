@@ -8,5 +8,5 @@
   "requirements": [],
   "after_dependencies": ["recorder"],
   "iot_class": "local_push",
-  "version": "2.0.6"
+  "version": "2.0.7"
 }
